@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/biometric-api/:path*",
+      "destination": "https://tporjpmdb.ritrjpm.edu.in/:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
