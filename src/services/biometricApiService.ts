@@ -12,7 +12,6 @@ import {
   calculateLopDays,
   calculateTotalDuration,
   DEFAULT_CLC_DATE,
-  excelAttendanceService,
   getDailyWageByCategory,
   getStatusLabel,
   normalizeCategory,
@@ -20,7 +19,7 @@ import {
   normalizeEmployeeCode,
   normalizeGender,
   normalizeName,
-} from './excelAttendanceService';
+} from '../utils/attendanceHelpers';
 
 export const BASE_URL = (
   import.meta.env.VITE_BIOMETRIC_API_URL || 'https://tporjpmdb.ritrjpm.edu.in'
@@ -116,12 +115,10 @@ function inferShiftFromMinutes(minutesOfDay: number): WorkerShift {
 }
 
 function resolveDivision(
-  excelMaster: AttendanceRecord | undefined,
   emp: EttlEmployeeRow | undefined,
   device: EttlDeviceRow | undefined,
   dept: EttlDepartmentRow | undefined
 ): DivisionNumber {
-  if (excelMaster) return excelMaster.division;
   if (
     emp?.Division !== null &&
     emp?.Division !== undefined &&
@@ -195,14 +192,14 @@ class BiometricApiService {
   async fetchLiveAttendance(): Promise<AttendanceDataset> {
     if (!isConfiguredApiKey(API_KEY)) {
       throw new Error(
-        'VITE_BIOMETRIC_API_KEY is missing or set to a placeholder in .env.local'
+        'VITE_BIOMETRIC_API_KEY is missing or set to a placeholder (.env.local locally or Vercel Environment Variables in production)'
       );
     }
 
     const activeLogTable = DEVICE_LOGS_TABLE;
 
-    // Fetch live table rows + optionally load Excel worker master for enrichment
-    const [logsRes, employeesRes, devicesRes, departmentsRes, excelDataset] =
+    // Fetch live punch logs and master tables directly from the biometric database API
+    const [logsRes, employeesRes, devicesRes, departmentsRes] =
       await Promise.all([
         this.requestJson<{ rows?: EttlDeviceLogRow[] }>(
           `/tables/${encodeURIComponent(activeLogTable)}?limit=1000`
@@ -214,21 +211,12 @@ class BiometricApiService {
         this.requestJson<{ rows?: EttlDepartmentRow[] }>(
           '/tables/Departments?limit=100'
         ),
-        excelAttendanceService.loadAllData().catch(() => null),
       ]);
 
     const rawDeviceLogs = logsRes.rows ?? [];
     const employees = employeesRes.rows ?? [];
     const devices = devicesRes.rows ?? [];
     const departments = departmentsRes.rows ?? [];
-
-    const excelByCode = new Map<string, AttendanceRecord>();
-    if (excelDataset) {
-      for (const rec of excelDataset.records) {
-        excelByCode.set(rec.employee_code, rec);
-        excelByCode.set(String(Number(rec.employee_code)), rec);
-      }
-    }
 
     const deviceMap = new Map<number, EttlDeviceRow>();
     for (const d of devices) {
@@ -275,7 +263,7 @@ class BiometricApiService {
     let serial = 1;
     const matchedCodesOnLatestDate = new Set<string>();
 
-    // 1. Live punch records from DeviceLogs_11_2026 merged with Excel/Employees master
+    // 1. Live punch records from configured logs table merged with Employees/Devices/Departments
     for (const [key, dayPunches] of punchesByUserDate.entries()) {
       const [userId, date] = key.split('__');
 
@@ -300,26 +288,18 @@ class BiometricApiService {
         emp?.EmployeeCode ?? userId,
         100000 + serial
       );
-      const excelMaster =
-        excelByCode.get(paddedCode) ?? excelByCode.get(userId);
 
       if (date === latestDate) {
         matchedCodesOnLatestDate.add(userId);
         matchedCodesOnLatestDate.add(paddedCode);
       }
 
-      const division = resolveDivision(excelMaster, emp, device, dept);
-      const name =
-        excelMaster?.name ||
-        normalizeName(emp?.EmployeeName) ||
-        `Employee #${userId}`;
+      const division = resolveDivision(emp, device, dept);
+      const name = normalizeName(emp?.EmployeeName) || `Employee #${userId}`;
       const rawDesignation =
-        excelMaster?.raw_designation ||
-        String(emp?.Designation ?? '').trim() ||
-        'Sanitary Worker';
-      const category =
-        excelMaster?.category ?? normalizeCategory(rawDesignation);
-      const gender = excelMaster?.gender ?? normalizeGender(emp?.Gender);
+        String(emp?.Designation ?? '').trim() || 'Sanitary Worker';
+      const category = normalizeCategory(rawDesignation);
+      const gender = normalizeGender(emp?.Gender);
       const method = mapVerifyCodeToMethod(lastPunch.C5 ?? firstPunch.C5);
       const totalDuration = calculateTotalDuration(inTime, outTime);
       const statusCode: AttendanceStatusCode = 'P';
@@ -339,11 +319,9 @@ class BiometricApiService {
         attendance_method: method,
         total_duration: totalDuration,
         log_id: `DB-${firstPunch.DeviceLogId}-${userId}`,
-        shift: excelMaster?.shift ?? inferShiftFromMinutes(firstWall.minutesOfDay),
+        shift: inferShiftFromMinutes(firstWall.minutesOfDay),
         raw_designation: rawDesignation,
-        cell_number:
-          excelMaster?.cell_number ||
-          (emp?.ContactNo ? String(emp.ContactNo).trim() : undefined),
+        cell_number: emp?.ContactNo ? String(emp.ContactNo).trim() : undefined,
         status_code: statusCode,
         status_label: getStatusLabel(statusCode),
         daily_wage_inr: dailyWage,
@@ -374,27 +352,19 @@ class BiometricApiService {
         continue;
       }
 
-      const excelMaster =
-        excelByCode.get(paddedCode) ?? excelByCode.get(rawUserCode);
       const dept = emp.DepartmentId ? deptMap.get(emp.DepartmentId) : undefined;
-      const division = resolveDivision(excelMaster, emp, undefined, dept);
+      const division = resolveDivision(emp, undefined, dept);
       const rawDesignation =
-        excelMaster?.raw_designation ||
-        String(emp.Designation ?? '').trim() ||
-        'Sanitary Worker';
-      const category =
-        excelMaster?.category ?? normalizeCategory(rawDesignation);
-      const gender = excelMaster?.gender ?? normalizeGender(emp.Gender);
+        String(emp.Designation ?? '').trim() || 'Sanitary Worker';
+      const category = normalizeCategory(rawDesignation);
+      const gender = normalizeGender(emp.Gender);
       const dailyWage = getDailyWageByCategory(category);
 
       records.push({
         s_no: serial,
         employee_code: paddedCode,
         division,
-        name:
-          excelMaster?.name ||
-          normalizeName(emp.EmployeeName) ||
-          `Employee #${rawUserCode}`,
+        name: normalizeName(emp.EmployeeName) || `Employee #${rawUserCode}`,
         category,
         gender,
         date: latestDate,
@@ -403,11 +373,9 @@ class BiometricApiService {
         attendance_method: '--',
         total_duration: '--',
         log_id: `DB-ABS-${emp.EmployeeId}`,
-        shift: excelMaster?.shift ?? 'Shift A',
+        shift: 'Shift A',
         raw_designation: rawDesignation,
-        cell_number:
-          excelMaster?.cell_number ||
-          (emp.ContactNo ? String(emp.ContactNo).trim() : undefined),
+        cell_number: emp.ContactNo ? String(emp.ContactNo).trim() : undefined,
         status_code: 'LOP',
         status_label: getStatusLabel('LOP'),
         daily_wage_inr: dailyWage,
@@ -418,20 +386,6 @@ class BiometricApiService {
       });
 
       serial++;
-    }
-
-    // 3. Include remaining Excel master workers not yet punched if Excel workbook is present
-    if (excelDataset) {
-      for (const exRec of excelDataset.records) {
-        if (matchedCodesOnLatestDate.has(exRec.employee_code)) continue;
-        matchedCodesOnLatestDate.add(exRec.employee_code);
-        records.push({
-          ...exRec,
-          s_no: serial,
-          date: latestDate,
-        });
-        serial++;
-      }
     }
 
     const users = buildDefaultUsers();
@@ -473,18 +427,9 @@ class BiometricApiService {
           ? apiErr.message
           : 'network unreachable';
 
-      try {
-        const excelData = await excelAttendanceService.loadAllData();
-        return {
-          ...excelData,
-          dataSourceMode: 'excel',
-          dataSourceMessage: `Live device server unavailable (${reason}) — showing local register (CLC Worker list as on 26.11.26.xlsx)`,
-        };
-      } catch {
-        return this.createEmptyErrorDataset(
-          `Database API unavailable (${reason}) and local Excel register was not found in public/.`
-        );
-      }
+      return this.createEmptyErrorDataset(
+        `Database API unavailable (${reason}).`
+      );
     }
   }
 
