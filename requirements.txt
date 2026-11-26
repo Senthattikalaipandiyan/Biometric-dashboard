@@ -1,0 +1,31 @@
+# Biometric Attendance Dashboard — Project Requirements
+# Note: This is a React + TypeScript + Vite web application.
+# Node dependencies are managed via package.json and package-lock.json (npm install).
+
+# === Runtime & Package Manager ===
+# Node.js (LTS recommended) + npm
+
+# === Production Dependencies (package.json) ===
+# lucide-react@^1.80.0
+# react@^19.3.1
+# react-dom@^19.3.1
+# xlsx@^0.18.5
+
+# === Development / Build Dependencies (package.json) ===
+# @tailwindcss/vite@^4.3.5
+# @types/react@^19.3.3
+# @types/react-dom@^19.3.0
+# @vitejs/plugin-react@^6.3.0
+# tailwindcss@^4.3.5
+# typescript@^7.0.2
+# vite@^8.3.8
+
+# === Required Environment Variables (.env.local / Vercel Dashboard) ===
+# VITE_BIOMETRIC_API_URL=https://tporjpmdb.ritrjpm.edu.in
+# VITE_BIOMETRIC_API_KEY=your_api_key_here
+# VITE_BIOMETRIC_LOGS_TABLE=DeviceLogs_11_2026
+
+# === Build & Vercel Settings ===
+# Install Command : npm install
+# Build Command   : npm run build  (tsc --noEmit && vite build)
+# Output Directory: dist
